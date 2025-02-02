@@ -6,6 +6,7 @@ from langchain.chat_models import ChatOpenAI
 from langchain.tools import BaseTool
 
 import json
+import os
 from typing import Type
 import yt_dlp
 from yt_utils import yt_get, yt_transcribe
@@ -67,7 +68,32 @@ class CustomYTTranscribeTool(BaseTool):
 
         transcriptions = {}
 
+        # Load cache if it exists
+        cache_file = "transcripts_cache.json"
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r') as f:
+                    transcriptions = json.load(f)
+            except Exception as e:
+                print(f"Error loading cache: {e}")
+                transcriptions = {}
+
         for video_url in url_set:
+            # Extract video ID from URL
+            try:
+                with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+                    info = ydl.extract_info(video_url, download=False)
+                    video_id = info.get('id', '')
+            except Exception as e:
+                print(f"Error getting video ID for {video_url}: {e}")
+                continue
+
+            # Check if transcript is already cached
+            if video_url in transcriptions:
+                print(f"Using cached transcript for {video_url}")
+                continue
+
+            # Download and transcribe if not in cache
             video_path = yt_get(video_url)
             if video_path:
                 transcription = yt_transcribe(video_path)
