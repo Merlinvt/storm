@@ -8,6 +8,11 @@ import requests
 from dsp import backoff_hdlr, giveup_hdlr
 
 from .utils import WebPageHelper
+from typing import Optional
+import json
+from youtube_search import YoutubeSearch
+import yt_dlp
+from openai import OpenAI
 
 
 class YouRM(dspy.Retrieve):
@@ -71,6 +76,105 @@ class YouRM(dspy.Retrieve):
             except Exception as e:
                 logging.error(f"Error occurs when searching query {query}: {e}")
 
+        return collected_results
+    
+class YoutubeRM(dspy.Retrieve):
+    """Retrieve information from YouTube using youtube_search and yt-dlp."""
+
+    def __init__(self, k: int = 3, youtube_search_max_results: int = 10, yt_dlp_params: Optional[dict] = None):
+        """
+        Args:
+            k (int): The number of top results to return.
+            youtube_search_max_results (int): The maximum number of results to fetch from youtube_search.
+            yt_dlp_params (dict, optional): Additional parameters to pass to yt-dlp.
+        """
+        super().__init__(k=k)
+        self.usage = 0
+        self.youtube_search_max_results = youtube_search_max_results
+        self.yt_dlp_params = yt_dlp_params if yt_dlp_params else {}
+        self.ydl = yt_dlp.YoutubeDL(self.yt_dlp_params)
+        self.openai_client = OpenAI()
+
+    def get_usage_and_reset(self):
+        usage = self.usage
+        self.usage = 0
+        return {"YoutubeRM": usage}
+
+    def forward(self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []):
+        """Search with youtube for self.k top passages for query or queries
+
+        Args:
+            query_or_queries (Union[str, List[str]]): The query or queries to search for.
+            exclude_urls (List[str]): A list of urls to exclude from the search results.
+
+        Returns:
+            a list of Dicts, each dict has keys of 'description', 'snippets' (list of strings), 'title', 'url'
+        """
+        queries = (
+            [query_or_queries]
+            if isinstance(query_or_queries, str)
+            else query_or_queries
+        )
+        self.usage += len(queries)
+        collected_results = []
+
+        for query in queries:
+            try:
+                search_results = YoutubeSearch(query, max_results=self.youtube_search_max_results).to_json()
+                search_data = json.loads(search_results)
+                url_suffix_list = [video['url_suffix'] for video in search_data['videos']]
+                
+                for url_suffix in url_suffix_list:
+                    if "https://youtube.com"+url_suffix in exclude_urls:
+                        continue
+                    video_url = "https://youtube.com" + url_suffix
+                    try:
+                        info = self.ydl.extract_info(video_url, download=False)
+                        if info:
+                            title = info.get('title', 'N/A')
+                            description = info.get('description', 'N/A')
+                            
+                            # Attempt to get the transcript
+                            transcript = None
+                            if 'automatic_captions' in info and info['automatic_captions']:
+                                try:
+                                    transcript_info = info['automatic_captions'].get('en', [])
+                                    if transcript_info:
+                                        transcript_url = transcript_info[0].get('url')
+                                        if transcript_url:
+                                            transcript_response = requests.get(transcript_url)
+                                            transcript_response.raise_for_status()
+                                            transcript = transcript_response.text
+                                except Exception as e:
+                                    logging.error(f"Error fetching transcript for {video_url}: {e}")
+                            
+                            if not transcript:
+                                try:
+                                    vpath = self.ydl.extract_info(video_url, download=True)['entries'][0]['formats'][0]['url']
+                                    with open("audio.mp4", "wb") as f:
+                                        f.write(requests.get(vpath).content)
+                                    with open("audio.mp4", "rb") as audio_file:
+                                        result = self.openai_client.audio.transcriptions.create(
+                                            model="whisper-1", 
+                                            file=audio_file
+                                        )
+                                    transcript = result.text
+                                    os.remove("audio.mp4")
+                                except Exception as e:
+                                    logging.error(f"Error transcribing {video_url} with whisper API: {e}")
+                            
+                            snippets = [transcript] if transcript else []
+                            collected_results.append({
+                                "title": title,
+                                "url": video_url,
+                                "description": description,
+                                "snippets": snippets,
+                            })
+                    except Exception as e:
+                        logging.error(f"Error extracting info for {video_url}: {e}")
+            except Exception as e:
+                logging.error(f"Error searching YouTube for query {query}: {e}")
+        
         return collected_results
 
 
