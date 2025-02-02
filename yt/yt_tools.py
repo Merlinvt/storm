@@ -5,9 +5,9 @@ from langchain.agents import AgentType, Tool, initialize_agent, tool
 from langchain.chat_models import ChatOpenAI
 from langchain.tools import BaseTool
 
-from typing import Type
-from youtube_search import YoutubeSearch
 import json
+from typing import Type
+import yt_dlp
 from yt_utils import yt_get, yt_transcribe
 
 
@@ -22,11 +22,19 @@ class CustomYTSearchTool(BaseTool):
     name = "CustomYTSearch"
     description = "search for youtube videos associated with a person. the input to this tool should be a comma separated list, the first part contains a person name and the second a number that is the maximum number of video results to return aka num_results. the second part is optional"
 
-    def _search(self, person:str, num_results) -> str:
-        results = YoutubeSearch(person,num_results).to_json()
-        data = json.loads(results)
-        url_suffix_list = [video['url_suffix'] for video in data['videos']]
-        return url_suffix_list
+    def _search(self, person:str, num_results) -> list:
+        ydl_opts = {
+            'quiet': True,
+            'extract_flat': True,
+            'force_generic_extractor': True,
+            'no_warnings': True
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            results = ydl.extract_info(f"ytsearch{num_results}:{person}", download=False)
+            if 'entries' in results:
+                return [f"https://youtube.com/watch?v={entry['id']}" for entry in results['entries']]
+        return []
     
     def _run(self, query: str) -> str:
         """Use the tool."""
@@ -59,13 +67,12 @@ class CustomYTTranscribeTool(BaseTool):
 
         transcriptions = {}
 
-        for vurl in url_set:
-            vpath = yt_get(vurl)
-
-            transcription = yt_transcribe(vpath)
-            transcriptions[vurl]=transcription
-
-            print(f"transcribed {vpath} into :\n {transcription}")
+        for video_url in url_set:
+            video_path = yt_get(video_url)
+            if video_path:
+                transcription = yt_transcribe(video_path)
+                transcriptions[video_url] = transcription
+                print(f"Transcribed {video_url}")
 
         with open("transcriptions.json", "w") as json_file:
             json.dump(transcriptions, json_file)

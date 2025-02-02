@@ -1,40 +1,49 @@
 '''
-Transcription utilities that generate textual summaries of Youtube videos, given their URL(s)
-- yt_get uses pytube to download the video URLs into a local file
-- yt_transcribe used the Whisper ASR model to convert the audio into text
-
+YouTube utilities for downloading and transcribing videos
 '''
 
+import yt_dlp
 import whisper
-import datetime
-import subprocess
-from pathlib import Path
-import pandas as pd
-import re
-import time
-import os 
-import numpy as np
-
-from pytube import YouTube
-import torch
-import time
-
+import os
+from typing import Dict, Optional
 
 def load_model():
     return whisper.load_model("base")
 
 model = load_model()
 
+def yt_get(video_url: str) -> Optional[str]:
+    """Download YouTube video audio and return path"""
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': '%(id)s.%(ext)s',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+        }],
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=True)
+            return f"{info['id']}.mp3"
+    except Exception as e:
+        print(f"Error downloading {video_url}: {e}")
+        return None
 
-def yt_get(yt_url):
-    yt = YouTube("https://youtube.com"+ yt_url,use_oauth=True, allow_oauth_cache=True)
-    print(f"youtube to be downloadd - {yt}")
-    vpath = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first().download()
-    print(f"Downloaded video {vpath}")
-    return vpath
-
-
-def yt_transcribe(video_url):
-    print(f"transcribing {video_url}")
-    result = model.transcribe(video_url)
-    return (result['text'])
+def yt_transcribe(video_path: str) -> str:
+    """Transcribe video file using OpenAI Whisper API"""
+    try:
+        from openai import OpenAI
+        client = OpenAI()
+        
+        with open(video_path, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file
+            )
+        os.remove(video_path)  # Clean up downloaded file
+        return transcript.text
+    except Exception as e:
+        print(f"Error transcribing {video_path}: {e}")
+        return ""
