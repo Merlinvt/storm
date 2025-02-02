@@ -35,6 +35,103 @@ def search_videos(query: str, limit: int = 5) -> List[Dict[str, Any]]:
         print(f"Error searching videos: {e}")
     return []
 
+def get_channel_videos(channel_url: str, limit: int = None, force_update: bool = False, cache_file: str = "channel_cache.json", fetch_only_new: bool = False) -> List[Dict[str, Any]]:
+    """
+    Get videos from a YouTube channel with caching
+    
+    Args:
+        channel_url: Full YouTube channel URL
+        limit: Maximum number of videos to return (None for all)
+        force_update: Force refresh channel data instead of using cache
+        cache_file: Path to JSON file for caching channel data
+        fetch_only_new: Only fetch videos newer than the last cached video
+        
+    Returns:
+        List of video entries with metadata
+    """
+    import os
+    import json
+    from datetime import datetime
+    
+    # Load cache if it exists
+    channel_cache = {}
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r') as f:
+                channel_cache = json.load(f)
+        except Exception as e:
+            print(f"Error loading cache: {e}")
+    
+    # Get latest video date from cache if it exists
+    latest_date = None
+    if fetch_only_new and channel_url in channel_cache and channel_cache[channel_url]['videos']:
+        latest_date = max(v['upload_date'] for v in channel_cache[channel_url]['videos'])
+        print(f"Only fetching videos newer than {latest_date}")
+    
+    # Check cache first unless force update
+    if not force_update and not fetch_only_new and channel_url in channel_cache:
+        print(f"Using cached data for {channel_url}")
+        videos = channel_cache[channel_url]['videos']
+        if limit:
+            return videos[:limit]
+        return videos
+            
+    # If not in cache or force update or fetching new videos, fetch from YouTube
+    ydl_opts = {
+        'quiet': True,
+        'extract_flat': True,
+        'force_generic_extractor': True,
+        'no_warnings': True,
+        'ignoreerrors': True,
+        'extract_flat': 'in_playlist'
+    }
+    
+    # Add date filter if we're only fetching new videos
+    if fetch_only_new and latest_date:
+        ydl_opts['dateafter'] = latest_date
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            results = ydl.extract_info(channel_url, download=False)
+            if results and 'entries' in results:
+                new_videos = [{
+                    'id': entry.get('id', ''),
+                    'title': entry.get('title', ''),
+                    'url': f"https://www.youtube.com/watch?v={entry.get('id', '')}",
+                    'duration': entry.get('duration', 0),
+                    'upload_date': entry.get('upload_date', ''),
+                    'view_count': entry.get('view_count', 0),
+                    'description': entry.get('description', '')
+                } for entry in results['entries']]
+                
+                # If fetching only new videos, merge with existing cache
+                if fetch_only_new and channel_url in channel_cache:
+                    existing_videos = channel_cache[channel_url]['videos']
+                    # Remove duplicates by ID
+                    existing_ids = {v['id'] for v in existing_videos}
+                    new_videos = [v for v in new_videos if v['id'] not in existing_ids]
+                    videos = existing_videos + new_videos
+                else:
+                    videos = new_videos
+                
+                # Save to cache
+                channel_cache[channel_url] = {
+                    'last_updated': datetime.now().isoformat(),
+                    'videos': videos
+                }
+                try:
+                    with open(cache_file, 'w') as f:
+                        json.dump(channel_cache, f, indent=2)
+                except Exception as e:
+                    print(f"Error saving to cache: {e}")
+                
+                if limit:
+                    return videos[:limit]
+                return videos
+    except Exception as e:
+        print(f"Error getting channel videos: {e}")
+    return []
+
 def get_video_info(video_url: str, download_transcript: bool = True, cache_file: str = "transcripts_cache.json") -> Dict[str, Any]:
     """
     Get detailed information about a specific video including transcript
